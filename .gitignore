@@ -1,3 +1,9 @@
 __pycache__/
 venv/
 output/
+cleaned/
+clean/
+debug_hibuddy.py
+debug_hibuddy2.py
+debug_hibuddy3.py
+hibuddy_prices.csv
