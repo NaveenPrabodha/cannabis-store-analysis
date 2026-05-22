@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.database import SessionLocal, get_db
 from app.models import Store, Product, Price
@@ -120,35 +121,84 @@ def get_deals():
 
     return results
     
-
+# SEARCH ENDPOINT
 @app.get("/search")
-def search(q: str, db: Session = Depends(get_db)):
+def search(keyword: str, db: Session = Depends(get_db)):
 
-    products = db.query(Product).filter(
-        Product.name.ilike(f"%{q}%")
-    ).all()
+    # -----------------------------------------
+    # SEARCH PRODUCTS
+    # -----------------------------------------
 
-    stores = db.query(Store).filter(
-        Store.store_name.ilike(f"%{q}%")
-    ).all()
+    matched_products = db.query(Product).filter(
+        or_(
+            Product.name.ilike(f"%{keyword}%"),
+            Product.brand.ilike(f"%{keyword}%"),
+            Product.category.ilike(f"%{keyword}%")
+        )
+    ).limit(20).all()
+
+    product_results = []
+
+    for product in matched_products:
+
+        # GET STORES CARRYING PRODUCT
+        fact_rows = db.query(Price).filter(
+            Price.product_id == product.product_id
+        ).all()
+
+        stores = []
+
+        for fact in fact_rows:
+
+            store = db.query(Store).filter(
+                Store.store_id == fact.store_id
+            ).first()
+
+            if store:
+
+                stores.append({
+                    "store_id": store.store_id,
+                    "store_name": store.store_name,
+                    "address": store.address,
+                    "phone": store.phone,
+                    "regular_price": float(fact.regular_price)
+                    if fact.regular_price else None,
+
+                    "sale_price": float(fact.sale_price)
+                    if fact.sale_price else None
+                })
+
+        product_results.append({
+            "product_id": product.product_id,
+            "name": product.name,
+            "brand": product.brand,
+            "category": product.category,
+            "size": product.size,
+            "stores": stores
+        })
+
+    # -----------------------------------------
+    # SEARCH STORES
+    # -----------------------------------------
+
+    matched_stores = db.query(Store).filter(
+        Store.store_name.ilike(f"%{keyword}%")
+    ).limit(20).all()
+
+    store_results = []
+
+    for store in matched_stores:
+
+        store_results.append({
+            "store_id": store.store_id,
+            "store_name": store.store_name,
+            "address": store.address,
+            "phone": store.phone
+        })
 
     return {
-        "products": [
-            {
-                "product_id": p.product_id,
-                "name": p.name,
-                "brand": p.brand
-            }
-            for p in products
-        ],
-
-        "stores": [
-            {
-                "store_id": s.store_id,
-                "store_name": s.store_name
-            }
-            for s in stores
-        ]
+        "products": product_results,
+        "stores": store_results
     }
 
 @app.get("/stores/{store_id}/products")

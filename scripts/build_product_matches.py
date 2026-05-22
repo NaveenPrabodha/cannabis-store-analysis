@@ -3,32 +3,62 @@ import re
 import pandas as pd
 from rapidfuzz import fuzz, process
 
-# ── Paths ─────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
-OCS_FILE = os.path.join(BASE_DIR, "output", "clean", "clean_products.csv")
-HIBUDDY_FILE = os.path.join(BASE_DIR, "output", "clean", "clean_prices.csv")
+OCS_FILE = os.path.join(
+    BASE_DIR,
+    "output",
+    "clean",
+    "clean_products.csv"
+)
 
-MATCH_FILE = os.path.join(BASE_DIR, "output", "clean", "product_matches.csv")
-FINAL_FILE = os.path.join(BASE_DIR, "output", "clean", "product_matches_final.csv")
+HIBUDDY_FILE = os.path.join(
+    BASE_DIR,
+    "output",
+    "clean",
+    "clean_prices.csv"
+)
 
+FINAL_FILE = os.path.join(
+    BASE_DIR,
+    "output",
+    "clean",
+    "product_matches_final.csv"
+)
 
-# ── Normalize text ────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
+# NORMALIZER
+# ─────────────────────────────────────────────────────
 
 def normalize_text(text):
+
     if pd.isna(text):
         return ""
 
     text = str(text).lower().strip()
+
+    # remove symbols
     text = re.sub(r"[^a-z0-9\s]", " ", text)
-    text = re.sub(r"\b\d+(\.\d+)?\s?(g|mg|ml|pk|x)\b", " ", text)
+
+    # remove weights/sizes
+    text = re.sub(
+        r"\b\d+(\.\d+)?\s?(g|mg|ml|pk|x)\b",
+        " ",
+        text
+    )
+
+    # collapse spaces
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
 
-
-# ── Load data ────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
+# LOAD DATA
+# ─────────────────────────────────────────────────────
 
 print("\nLoading datasets...")
 
@@ -36,47 +66,67 @@ ocs_df = pd.read_csv(OCS_FILE)
 hibuddy_df = pd.read_csv(HIBUDDY_FILE)
 
 print(f"OCS products:     {len(ocs_df)}")
-print(f"HiBuddy products: {len(hibuddy_df)}")
+print(f"HiBuddy rows:     {len(hibuddy_df)}")
 
+# ─────────────────────────────────────────────────────
+# BUILD OCS MATCH STRINGS
+# ─────────────────────────────────────────────────────
 
-# ── Normalize ────────────────────────────────────────────────
+ocs_df["match_text"] = (
+    ocs_df["name"].fillna("").apply(normalize_text)
+    + " " +
+    ocs_df["brand"].fillna("").apply(normalize_text)
+)
 
-ocs_df["normalized_name"] = ocs_df["name"].apply(normalize_text)
-hibuddy_df["normalized_name"] = hibuddy_df["name"].apply(normalize_text)
+# remove duplicates
+ocs_df = ocs_df.drop_duplicates(subset=["match_text"])
 
+print(f"Unique OCS products: {len(ocs_df)}")
 
-# ── Deduplicate OCS ──────────────────────────────────────────
+# ─────────────────────────────────────────────────────
+# BUILD LOOKUP
+# ─────────────────────────────────────────────────────
 
-ocs_unique = ocs_df.drop_duplicates(subset=["normalized_name"]).copy()
+ocs_lookup = {}
 
-ocs_lookup_name = dict(zip(
-    ocs_unique["normalized_name"],
-    ocs_unique["name"]
-))
+for _, row in ocs_df.iterrows():
 
-ocs_names = list(ocs_lookup_name.keys())
+    match_text = row["match_text"]
 
-print(f"Unique OCS names: {len(ocs_names)}")
+    ocs_lookup[match_text] = {
+        "product_id": row["ocs_product_id"],
+        "name": row["name"]
+    }
 
+ocs_keys = list(ocs_lookup.keys())
 
-# ── STEP 1: FUZZY MATCHING ───────────────────────────────────
+# ─────────────────────────────────────────────────────
+# MATCH PRODUCTS
+# ─────────────────────────────────────────────────────
 
 print("\nMatching products...")
 
 matches = []
 
+matched_count = 0
+
 for _, row in hibuddy_df.iterrows():
 
-    hibuddy_name = row["name"]
-    normalized = row["normalized_name"]
+    hibuddy_product_id = row.get("hibuddy_product_id")
 
-    if not normalized:
+    hibuddy_text = (
+        normalize_text(row.get("name"))
+        + " " +
+        normalize_text(row.get("brand"))
+    ).strip()
+
+    if not hibuddy_text:
         continue
 
     result = process.extractOne(
-        normalized,
-        ocs_names,
-        scorer=fuzz.ratio
+        hibuddy_text,
+        ocs_keys,
+        scorer=fuzz.token_sort_ratio
     )
 
     if not result:
@@ -84,68 +134,38 @@ for _, row in hibuddy_df.iterrows():
 
     matched_key, score, _ = result
 
-    if score < 80:
+    # MUCH BETTER THRESHOLD
+    if score < 75:
         continue
 
-    matched_key, score, _ = result
-    matched_name = ocs_lookup_name.get(matched_key)
+    matched_product = ocs_lookup[matched_key]
 
     matches.append({
-        "hibuddy_product_id": row.get("hibuddy_product_id", ""),
-        "hibuddy_name": hibuddy_name,
-        "normalized_hibuddy_name": normalized,
-        "matched_ocs_key": matched_key,
-        "matched_ocs_name": matched_name,
+        "hibuddy_product_id": hibuddy_product_id,
+        "product_id": int(matched_product["product_id"]),
         "match_score": score
     })
 
+    matched_count += 1
+
+# ─────────────────────────────────────────────────────
+# SAVE
+# ─────────────────────────────────────────────────────
+
 matches_df = pd.DataFrame(matches)
 
-matches_df = matches_df.sort_values(by="match_score", ascending=False)
-
-matches_df.to_csv(MATCH_FILE, index=False)
-
-print(f"\nStep 1 DONE → {len(matches_df)} matches saved")
-
-
-# ── STEP 2: ATTACH PRODUCT IDs ───────────────────────────────
-
-print("\nAttaching product IDs...")
-
-products_lookup = dict(
-    zip(
-        ocs_df["normalized_name"].str.lower().str.strip(),
-        ocs_df["ocs_product_id"]
-    )
+# remove duplicates
+matches_df = matches_df.drop_duplicates(
+    subset=["hibuddy_product_id"]
 )
 
-final_rows = []
-missing = 0
+matches_df.to_csv(FINAL_FILE, index=False)
 
-for _, row in matches_df.iterrows():
-
-    matched_name = str(row["matched_ocs_name"]).strip().lower()
-
-    product_id = products_lookup.get(matched_name)
-
-    if pd.isna(product_id) or product_id is None:
-        missing += 1
-        continue
-
-    final_rows.append({
-        "hibuddy_product_id": row["hibuddy_product_id"],
-        "product_id": int(product_id),
-        "match_score": row["match_score"]
-    })
-
-final_df = pd.DataFrame(final_rows)
-
-final_df.to_csv(FINAL_FILE, index=False)
-
-
-# ── SUMMARY ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
+# SUMMARY
+# ─────────────────────────────────────────────────────
 
 print("\nDONE")
-print(f"Final matches: {len(final_df)}")
-print(f"Missing:       {missing}")
-print(f"Saved:         {FINAL_FILE}")
+print(f"Matches created: {len(matches_df)}")
+print(f"Saved to:")
+print(FINAL_FILE)

@@ -26,10 +26,7 @@ CLEAN_DIR = os.path.join(BASE_DIR, "output", "clean")
 STORES_FILE = os.path.join(CLEAN_DIR, "clean_stores.csv")
 PRODUCTS_FILE = os.path.join(CLEAN_DIR, "clean_products.csv")
 PRICES_FILE = os.path.join(CLEAN_DIR, "clean_prices.csv")
-
-# NEW MATCH FILE
 MATCH_FILE = os.path.join(CLEAN_DIR, "product_matches_final.csv")
-matches = pd.read_csv(MATCH_FILE)
 
 # ─────────────────────────────────────────────────────
 # CONNECT
@@ -126,27 +123,27 @@ for _, row in products.iterrows():
 
     product_rows.append((
 
-    int(row.get("ocs_product_id")),
+        int(row.get("ocs_product_id")),
 
-    row.get("name"),
-    row.get("normalized_name"),
+        row.get("name"),
+        row.get("normalized_name"),
 
-    row.get("brand"),
-    row.get("normalized_brand"),
+        row.get("brand"),
+        row.get("normalized_brand"),
 
-    row.get("category"),
-    row.get("subcategory"),
+        row.get("category"),
+        row.get("subcategory"),
 
-    row.get("size"),
+        row.get("size"),
 
-    safe_float(row.get("price")),
+        safe_float(row.get("price")),
 
-    safe_float(row.get("thc_min")),
-    safe_float(row.get("thc_max")),
+        safe_float(row.get("thc_min")),
+        safe_float(row.get("thc_max")),
 
-    safe_float(row.get("cbd_min")),
-    safe_float(row.get("cbd_max")),
-))
+        safe_float(row.get("cbd_min")),
+        safe_float(row.get("cbd_max")),
+    ))
 
 execute_values(
     cur,
@@ -173,8 +170,8 @@ execute_values(
 
         cbd_min,
         cbd_max
-)
-VALUES %s
+    )
+    VALUES %s
     """,
     product_rows
 )
@@ -260,9 +257,15 @@ fact_rows = []
 missing_store = 0
 missing_product = 0
 
+# IMPORTANT: KEEP THIS OUTSIDE LOOP
+seen_facts = set()
+
 for _, row in prices.iterrows():
 
+    # ─────────────────────────────
     # STORE MATCH
+    # ─────────────────────────────
+
     store_id = store_lookup.get(
         row.get("hibuddy_store_id")
     )
@@ -271,7 +274,10 @@ for _, row in prices.iterrows():
         missing_store += 1
         continue
 
+    # ─────────────────────────────
     # PRODUCT MATCH
+    # ─────────────────────────────
+
     hibuddy_product_id = row.get("hibuddy_product_id")
 
     product_id = match_lookup.get(hibuddy_product_id)
@@ -280,11 +286,34 @@ for _, row in prices.iterrows():
         missing_product += 1
         continue
 
+    # ─────────────────────────────
     # SAFE NUMBERS
+    # ─────────────────────────────
+
     regular_price = row.get("regular_price")
     sale_price = row.get("sale_price")
     discount_percent = row.get("discount_percent")
     typical_nearby = row.get("typical_nearby")
+
+    # ─────────────────────────────
+    # DUPLICATE CHECK
+    # ─────────────────────────────
+
+    fact_key = (
+        int(store_id),
+        int(product_id),
+        regular_price,
+        sale_price
+    )
+
+    if fact_key in seen_facts:
+        continue
+
+    seen_facts.add(fact_key)
+
+    # ─────────────────────────────
+    # ADD FACT ROW
+    # ─────────────────────────────
 
     fact_rows.append((
         int(store_id),
@@ -346,8 +375,6 @@ print("\n=== FINAL STATS ===")
 print(f"Missing stores:   {missing_store}")
 print(f"Missing products: {missing_product}")
 
-# DB COUNTS
-
 cur.execute("SELECT COUNT(*) FROM dim_stores")
 print(f"dim_stores:   {cur.fetchone()[0]}")
 
@@ -365,6 +392,3 @@ cur.close()
 conn.close()
 
 print("\nETL LOAD COMPLETE")
-
-print(matches.columns.tolist())
-print(matches.head())
